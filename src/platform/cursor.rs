@@ -148,12 +148,10 @@ impl CursorOverlay {
     #[cfg(test)]
     pub(super) fn verify_hit_testing(&mut self) {
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetCursor, HTCLIENT, SendMessageW, WM_SETCURSOR, WindowFromPoint,
+            GetCursor, HTCLIENT, SendMessageW, WM_NCHITTEST, WM_SETCURSOR,
         };
 
         let point = Point { x: 1, y: 1 };
-        // SAFETY: Query the desktop hit test and send a cursor message only to
-        // our own window. This does not send a mouse event or move the pointer.
         let horizontal = CursorShape::Resize(ResizeDirection::Horizontal);
         for (point, shape, expected) in [
             (point, CursorShape::Ready, IDC_HAND),
@@ -161,8 +159,14 @@ impl CursorOverlay {
             (Point { x: 100, y: 100 }, horizontal, IDC_SIZEWE),
         ] {
             self.show(point, shape);
+            // Hit-test the overlay directly so other windows on the desktop cannot
+            // affect the result. WM_NCHITTEST packs the screen coordinates into two words.
+            let coords = LPARAM((point.x | (point.y << 16)) as isize);
+            // SAFETY: Query and send messages to the overlay on its owning thread.
             unsafe {
-                assert_eq!(WindowFromPoint(point.into()), self.popup.hwnd);
+                assert!(IsWindowVisible(self.popup.hwnd).as_bool());
+                let hit = SendMessageW(self.popup.hwnd, WM_NCHITTEST, None, Some(coords));
+                assert_eq!(hit, LRESULT(HTCLIENT as isize));
                 SendMessageW(
                     self.popup.hwnd,
                     WM_SETCURSOR,
@@ -173,8 +177,8 @@ impl CursorOverlay {
             }
         }
         self.hide();
-        // SAFETY: The previous hit test was pure and the overlay is now hidden.
-        assert_ne!(unsafe { WindowFromPoint(point.into()) }, self.popup.hwnd);
+        // SAFETY: Query the overlay's visibility before its window is destroyed.
+        assert!(!unsafe { IsWindowVisible(self.popup.hwnd) }.as_bool());
     }
 }
 
