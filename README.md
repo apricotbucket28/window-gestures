@@ -1,5 +1,3 @@
-<img src="assets/window-gestures.png" width="104" height="104" alt="">
-
 # Window Gestures
 
 Hold the Windows key and drag anywhere inside a window to move or resize it. Give a crowded window more room, pull a window onto another monitor, or tile two apps side by side without hunting for title bars or resize handles.
