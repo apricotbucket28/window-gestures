@@ -1,0 +1,2 @@
+third_party/windows-reactor/** text eol=lf
+third_party/reactor-popup/upstream.patch text eol=lf -whitespace

@@ -1,0 +1,33 @@
+name: Windows checks
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Check formatting
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --locked --target ${{ matrix.target }} --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked --target ${{ matrix.target }}
+      - name: Build release executable
+        run: cargo build --locked --release --target ${{ matrix.target }}

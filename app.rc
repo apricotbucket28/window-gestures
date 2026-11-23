@@ -1,0 +1,32 @@
+#include <winver.h>
+
+#define IDI_APP_ICON 1
+#define APP_NAME "Window Gestures"
+#define APP_PUBLISHER "apricotbucket28"
+
+IDI_APP_ICON ICON "assets/window-gestures.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION APP_VERSION_NUMERIC
+ PRODUCTVERSION APP_VERSION_NUMERIC
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", APP_PUBLISHER
+            VALUE "FileDescription", APP_NAME
+            VALUE "FileVersion", APP_VERSION_STRING
+            VALUE "InternalName", "window-gestures"
+            VALUE "OriginalFilename", "window-gestures.exe"
+            VALUE "ProductName", APP_NAME
+            VALUE "ProductVersion", APP_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

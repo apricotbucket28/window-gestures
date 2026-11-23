@@ -1,0 +1,281 @@
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -10,16 +10,17 @@ categories = ["os::windows-apis"]
+ readme = "readme.md"
+ 
+ [dependencies]
+-windows-collections = { workspace = true, features = ["std"] }
+-windows-core = { workspace = true }
+-windows-future = { workspace = true }
+-windows-reference = { workspace = true, features = ["std"] }
+-windows-threading = { workspace = true }
+-windows-time = { workspace = true }
+-windows-window = { workspace = true }
++windows-collections = { git = "https://github.com/microsoft/windows-rs", rev = "@WINDOWS_RS_REVISION@", default-features = false, features = ["std"] }
++windows-core = { git = "https://github.com/microsoft/windows-rs", rev = "@WINDOWS_RS_REVISION@", default-features = false }
++windows-future = { git = "https://github.com/microsoft/windows-rs", rev = "@WINDOWS_RS_REVISION@", default-features = false }
++windows-reference = { git = "https://github.com/microsoft/windows-rs", rev = "@WINDOWS_RS_REVISION@", default-features = false, features = ["std"] }
++windows-threading = { git = "https://github.com/microsoft/windows-rs", rev = "@WINDOWS_RS_REVISION@", default-features = false }
++windows-time = { git = "https://github.com/microsoft/windows-rs", rev = "@WINDOWS_RS_REVISION@", default-features = false }
++windows-window = { git = "https://github.com/microsoft/windows-rs", rev = "@WINDOWS_RS_REVISION@", default-features = false }
+ 
+-[lints]
+-workspace = true
++[lints.rust.unexpected_cfgs]
++level = "warn"
++check-cfg = ["cfg(windows_slim_errors, windows_cast_diagnostics)"]
+ 
+ [package.metadata.docs.rs]
+ default-target = "x86_64-pc-windows-msvc"
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -35,7 +35,9 @@ pub use declaration::*;
+ use generated::*;
+ use ir::*;
+ use native::*;
+-pub use native::{App, ScreenPoint, WindowTitleBarHeight};
++pub use native::{
++    App, ScreenMenuChange, ScreenMenuItem, ScreenMenus, ScreenPoint, WindowTitleBarHeight,
++};
+ use reconcile::*;
+ pub use reference::*;
+ pub use window::*;
+diff --git a/src/native/mod.rs b/src/native/mod.rs
+--- a/src/native/mod.rs
++++ b/src/native/mod.rs
+@@ -25,6 +25,7 @@ mod transient_menu;
+ mod winui;
+ 
+ pub use app::*;
++pub use transient_menu::{ScreenMenuChange, ScreenMenuItem, ScreenMenus};
+ pub use winui::*;
+ 
+ struct PhysicalCoordinates(bindings::DPI_AWARENESS_CONTEXT);
+diff --git a/src/native/app/mod.rs b/src/native/app/mod.rs
+--- a/src/native/app/mod.rs
++++ b/src/native/app/mod.rs
+@@ -632,7 +632,7 @@ impl App {
+ ///
+ /// `startup` creates the host that owns the application's windows. The host is dropped before
+ /// the remaining dispatcher registrations and the WinUI application object.
+-fn run<T: 'static>(
++pub(super) fn run<T: 'static>(
+     startup: impl FnOnce(&DispatcherQueue) -> windows_core::Result<T> + 'static,
+ ) -> windows_core::Result<()> {
+     bootstrap_runtime()?;
+@@ -870,7 +870,13 @@ fn open_component_window(
+             .insert(id, ComponentWindow { drain, state },)
+             .is_none()
+     );
+-    if let Err(error) = native.activate() {
++    let shown = (|| {
++        if let Some(setup) = &policy.before_show {
++            setup.call(native.raw_handle()?);
++        }
++        native.activate()
++    })();
++    if let Err(error) = shown {
+         if let Some(window) = application.borrow_mut().windows.remove(&id) {
+             window.dispose();
+         }
+@@ -1140,7 +1146,7 @@ fn is_packaged_process() -> windows_core::Result<bool> {
+     }
+ }
+ 
+-fn bootstrap_runtime() -> windows_core::Result<()> {
++pub(super) fn bootstrap_runtime() -> windows_core::Result<()> {
+     if is_packaged_process()? {
+         return Ok(());
+     }
+@@ -1204,7 +1210,7 @@ fn exit_application() {
+     }
+ }
+ 
+-fn exit_ui_thread() {
++pub(super) fn exit_ui_thread() {
+     let handler = DispatcherQueueHandler::new(exit_application);
+     let queued = DispatcherQueue::GetForCurrentThread().and_then(|dispatcher| {
+         dispatcher.TryEnqueueWithPriority(DispatcherQueuePriority::High, &handler)
+diff --git a/src/native/bindings.rs b/src/native/bindings.rs
+--- a/src/native/bindings.rs
++++ b/src/native/bindings.rs
+@@ -9207,9 +9207,25 @@ windows_core::imp::define_winrt_interface!(
+     IDesktopSiteBridge_Vtbl,
+     0xf0ae8750_905c_50a2_8a12_4545c6245bb4
+ );
++impl IDesktopSiteBridge {
++    pub(crate) fn WindowId(&self) -> windows_core::Result<WindowId> {
++        unsafe {
++            let mut result__ = core::mem::zeroed();
++            (windows_core::Interface::vtable(self).WindowId)(
++                windows_core::Interface::as_raw(self),
++                &mut result__,
++            )
++            .map(|| result__)
++        }
++    }
++}
+ #[repr(C)]
+ pub struct IDesktopSiteBridge_Vtbl {
+     pub base__: windows_core::IInspectable_Vtbl,
++    IsEnabled: usize,
++    IsVisible: usize,
++    pub WindowId:
++        unsafe extern "system" fn(*mut core::ffi::c_void, *mut WindowId) -> windows_core::HRESULT,
+ }
+ windows_core::imp::define_winrt_interface!(
+     IDesktopWindowXamlSource,
+diff --git a/src/native/transient_menu.rs b/src/native/transient_menu.rs
+--- a/src/native/transient_menu.rs
++++ b/src/native/transient_menu.rs
+@@ -1,7 +1,12 @@
+ use super::*;
+ use bindings::{Grid, HorizontalAlignment, VerticalAlignment, *};
+ 
++#[path = "../../../reactor-popup/screen.rs"]
++mod screen;
++pub use screen::{ScreenMenuChange, ScreenMenuItem, ScreenMenus};
++
+ const HOST_SIZE: i32 = 2;
++const SWP_SHOWWINDOW: u32 = 0x0040;
+ 
+ pub(super) struct TransientMenuHost {
+     state: Rc<RefCell<TransientMenuState>>,
+@@ -45,6 +50,13 @@ impl Drop for ActiveMenu {
+ 
+ impl TransientMenuHost {
+     pub(super) fn new(dispatcher: DispatcherQueue) -> windows_core::Result<Self> {
++        Self::with_ready(dispatcher, || {})
++    }
++
++    fn with_ready(
++        dispatcher: DispatcherQueue,
++        ready: impl FnOnce() + 'static,
++    ) -> windows_core::Result<Self> {
+         let _coordinates = PhysicalCoordinates::enter()?;
+         let root = Grid::new()?;
+         let anchor = Grid::new()?;
+@@ -59,13 +71,14 @@ impl TransientMenuHost {
+             applied: Cell::new(ElementTheme::Default),
+             refresh_pending: Cell::new(false),
+         });
++        theme.refresh()?;
+         let message_theme = Rc::downgrade(&theme);
+         let message_dispatcher = dispatcher.clone();
+         let host = windows_window::Window::new("TransientMenuHost")
+             .style(WS_POPUP)
+             .ex_style(WS_EX_LAYERED as u32 | WS_EX_TOOLWINDOW as u32 | WS_EX_TOPMOST as u32)
+             .size(HOST_SIZE, HOST_SIZE)
+-            .visible(true)
++            .visible(false)
+             .quit_on_close(false)
+             .on_message(move |_, message, _, _| {
+                 if matches!(message as i32, WM_SETTINGCHANGE | WM_THEMECHANGED)
+@@ -103,13 +116,31 @@ impl TransientMenuHost {
+             generation: 0,
+         }));
+         let loaded_state = Rc::downgrade(&state);
++        let ready = RefCell::new(Some(ready));
+         let loaded = anchor_element.Loaded(local::handler(move |_, _| {
+             let Some(state) = loaded_state.upgrade() else {
+                 return;
+             };
+             state.borrow_mut().loaded = true;
++            if let Some(ready) = ready.borrow_mut().take() {
++                ready();
++            }
+             show_pending(&state).unwrap();
+         }))?;
++        // Let the island lay out even when the executable was started hidden.
++        // The anchor is already transparent, and showing it must preserve focus.
++        unsafe {
++            SetWindowPos(
++                hwnd.cast(),
++                HWND_TOPMOST,
++                0,
++                0,
++                HOST_SIZE,
++                HOST_SIZE,
++                SWP_NOACTIVATE as u32 | SWP_SHOWWINDOW,
++            )
++            .ok()?;
++        }
+ 
+         Ok(Self {
+             state,
+@@ -124,14 +155,14 @@ impl TransientMenuHost {
+     }
+ }
+ 
+-fn system_theme() -> windows_core::Result<ElementTheme> {
++fn app_theme() -> windows_core::Result<ElementTheme> {
+     let mut value = 0u32;
+     let mut size = size_of::<u32>() as u32;
+     let status = unsafe {
+         RegGetValueW(
+             HKEY_CURRENT_USER,
+             windows_core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+-            windows_core::w!("SystemUsesLightTheme"),
++            windows_core::w!("AppsUseLightTheme"),
+             RRF_RT_REG_DWORD as u32,
+             std::ptr::null_mut(),
+             (&mut value as *mut u32).cast(),
+@@ -155,7 +186,7 @@ fn theme_preference(status: i32, value: u32) -> windows_core::Result<ElementThem
+ 
+ impl MenuThemeState {
+     fn refresh(&self) -> windows_core::Result<()> {
+-        let theme = system_theme()?;
++        let theme = app_theme()?;
+         // Record the in-flight theme before native code can reenter.
+         if self.applied.replace(theme) != theme {
+             self.anchor.SetRequestedTheme(theme)?;
+diff --git a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -195,6 +195,7 @@ pub struct WindowPolicy {
+     pub(crate) theme: WindowTheme,
+     pub(crate) client_size: Option<(f64, f64)>,
+     pub(crate) minimum_client_size: Option<(f64, f64)>,
++    pub(crate) before_show: Option<Callback<*mut std::ffi::c_void>>,
+ }
+ 
+ impl WindowPolicy {
+@@ -224,6 +225,14 @@ impl WindowPolicy {
+         self.minimum_client_size = Some((width, height));
+         self
+     }
++
++    /// Runs on the UI thread after initial sizing and before the first activation.
++    ///
++    /// The callback receives the native HWND, which is valid for the duration of the call.
++    pub fn before_show(mut self, setup: impl Fn(*mut std::ffi::c_void) + 'static) -> Self {
++        self.before_show = Some(Callback::new(setup));
++        self
++    }
+ }
+ 
+ fn validate_window_size(width: f64, height: f64) {
+diff --git a/src/declaration.rs b/src/declaration.rs
+--- a/src/declaration.rs
++++ b/src/declaration.rs
+@@ -439,6 +439,7 @@ pub enum AcceleratorKey {
+     Add,
+     Decimal,
+     Enter,
++    Escape,
+ }
+ 
+ /// Modifier keys for a keyboard accelerator.
+diff --git a/src/native/winui/objects.rs b/src/native/winui/objects.rs
+--- a/src/native/winui/objects.rs
++++ b/src/native/winui/objects.rs
+@@ -519,6 +519,7 @@ impl WinUiAdapter {
+                 AcceleratorKey::Add => native::VirtualKey::Add,
+                 AcceleratorKey::Decimal => native::VirtualKey::Decimal,
+                 AcceleratorKey::Enter => native::VirtualKey::Enter,
++                AcceleratorKey::Escape => native::VirtualKey::Escape,
+             })?;
+             value.SetModifiers(match accelerator.modifiers {
+                 AcceleratorModifiers::None => native::VirtualKeyModifiers::None,

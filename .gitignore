@@ -1,0 +1,5 @@
+/target/
+*.md
+!BUILDING.md
+!README.md
+!third_party/windows-reactor/readme.md
